@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+
+### Functions
+##############################################################################
+
+function __b3bp_log () {
+  local log_color="${1}"
+  shift
+
+  local color_purple="\\x1b[35m"
+  local color_green="\\x1b[32m"
+  local color_blue="\\x1b[34m"
+  local color_orange="\\x1b[33m"
+  local color_red="\\x1b[31m"
+  local color_pink="\\x1b[1;31m"
+
+  local colorvar="color_${log_color}"
+
+  local color="${!colorvar:-}" #  ${color_green}}"
+  local color_reset="\\x1b[0m"
+
+  if { [[ "${TERM:-}" != "xterm"* ]] && [[ "${TERM:-}" != "screen"* ]]; } || [[ ! -t 1 ]] || [[ ! -t 2 ]]; then
+      # Don't use colors on pipes or non-recognized terminals
+      color=""; color_reset=""
+  fi
+
+  # all remaining arguments are to be printed
+  local log_line=""
+
+  while IFS=$'\n' read -r log_line; do
+    echo -e "${color}${log_line}${color_reset}"
+  done <<< "${@:-}"
+}
+
+function help () {
+  echo "" 1>&2
+  echo " ${*}" 1>&2
+  echo "" 1>&2
+  echo "  ${__usage:-No usage available}" 1>&2
+  echo "" 1>&2
+
+  if [[ "${__helptext:-}" ]]; then
+    echo " ${__helptext}" 1>&2
+    echo "" 1>&2
+  fi
+
+  exit 1
+}
+
+
+### Parse commandline options
+##############################################################################
+
+read -r -d '' __usage <<-'EOF' || true # exits non-zero when EOF encountered
+  -h --help        This page
+EOF
+
+read -r -d '' __helptext <<-'EOF' || true # exits non-zero when EOF encountered
+ cecho <color> <message>
+ Available colors: purple,green,blue,orange,red,pink
+ Leave out <color> for no color
+ Using pipes or output to files will disable colors
+EOF
+
+# Translate usage string -> getopts arguments, and set $arg_<flag> defaults
+while read -r __b3bp_tmp_line; do
+  if [[ "${__b3bp_tmp_line}" =~ ^- ]]; then
+    # fetch single character version of option string
+    __b3bp_tmp_opt="${__b3bp_tmp_line%% *}"
+    __b3bp_tmp_opt="${__b3bp_tmp_opt:1}"
+
+    # fetch long version if present
+    __b3bp_tmp_long_opt=""
+
+    if [[ "${__b3bp_tmp_line}" = *"--"* ]]; then
+      __b3bp_tmp_long_opt="${__b3bp_tmp_line#*--}"
+      __b3bp_tmp_long_opt="${__b3bp_tmp_long_opt%% *}"
+    fi
+
+    # map opt long name to+from opt short name
+    printf -v "__b3bp_tmp_opt_long2short_${__b3bp_tmp_long_opt//-/_}" '%s' "${__b3bp_tmp_opt}"
+    printf -v "__b3bp_tmp_opt_short2long_${__b3bp_tmp_opt}" '%s' "${__b3bp_tmp_long_opt//-/_}"
+
+    # check if option takes an argument
+    if [[ "${__b3bp_tmp_line}" =~ \[.*\] ]]; then
+      __b3bp_tmp_opt="${__b3bp_tmp_opt}:" # add : if opt has arg
+      __b3bp_tmp_init=""  # it has an arg. init with ""
+      printf -v "__b3bp_tmp_has_arg_${__b3bp_tmp_opt:0:1}" '%s' "1"
+    elif [[ "${__b3bp_tmp_line}" =~ \{.*\} ]]; then
+      __b3bp_tmp_opt="${__b3bp_tmp_opt}:" # add : if opt has arg
+      __b3bp_tmp_init=""  # it has an arg. init with ""
+      # remember that this option requires an argument
+      printf -v "__b3bp_tmp_has_arg_${__b3bp_tmp_opt:0:1}" '%s' "2"
+    else
+      __b3bp_tmp_init="0" # it's a flag. init with 0
+      printf -v "__b3bp_tmp_has_arg_${__b3bp_tmp_opt:0:1}" '%s' "0"
+    fi
+    __b3bp_tmp_opts="${__b3bp_tmp_opts:-}${__b3bp_tmp_opt}"
+
+    if [[ "${__b3bp_tmp_line}" =~ ^Can\ be\ repeated\. ]] || [[ "${__b3bp_tmp_line}" =~ \.\ *Can\ be\ repeated\. ]]; then
+      # remember that this option can be repeated
+      printf -v "__b3bp_tmp_is_array_${__b3bp_tmp_opt:0:1}" '%s' "1"
+    else
+      printf -v "__b3bp_tmp_is_array_${__b3bp_tmp_opt:0:1}" '%s' "0"
+    fi
+  fi
+
+  [[ "${__b3bp_tmp_opt:-}" ]] || continue
+
+  if [[ "${__b3bp_tmp_line}" =~ ^Default= ]] || [[ "${__b3bp_tmp_line}" =~ \.\ *Default= ]]; then
+    # ignore default value if option does not have an argument
+    __b3bp_tmp_varname="__b3bp_tmp_has_arg_${__b3bp_tmp_opt:0:1}"
+
+    if [[ "${!__b3bp_tmp_varname}" != "0" ]]; then
+      __b3bp_tmp_init="${__b3bp_tmp_line##*Default=}"
+      __b3bp_tmp_re='^"(.*)"$'
+      if [[ "${__b3bp_tmp_init}" =~ ${__b3bp_tmp_re} ]]; then
+        __b3bp_tmp_init="${BASH_REMATCH[1]}"
+      else
+        __b3bp_tmp_re="^'(.*)'$"
+        if [[ "${__b3bp_tmp_init}" =~ ${__b3bp_tmp_re} ]]; then
+          __b3bp_tmp_init="${BASH_REMATCH[1]}"
+        fi
+      fi
+    fi
+  fi
+
+  if [[ "${__b3bp_tmp_line}" =~ ^Required\. ]] || [[ "${__b3bp_tmp_line}" =~ \.\ *Required\. ]]; then
+    # remember that this option requires an argument
+    printf -v "__b3bp_tmp_has_arg_${__b3bp_tmp_opt:0:1}" '%s' "2"
+  fi
+
+  __b3bp_tmp_varname="__b3bp_tmp_is_array_${__b3bp_tmp_opt:0:1}"
+  [[ "${!__b3bp_tmp_varname}" = "0" ]] && printf -v "arg_${__b3bp_tmp_opt:0:1}" '%s' "${__b3bp_tmp_init}"
+done <<< "${__usage:-}"
+
+# run getopts only if options were specified in __usage
+if [[ "${__b3bp_tmp_opts:-}" ]]; then
+  # Allow long options like --this
+  __b3bp_tmp_opts="${__b3bp_tmp_opts}-:"
+
+  # Reset in case getopts has been used previously in the shell.
+  OPTIND=1
+
+  # start parsing command line
+  set +o nounset # unexpected arguments will cause unbound variables
+                 # to be dereferenced
+  # Overwrite $arg_<flag> defaults with the actual CLI options
+  while getopts "${__b3bp_tmp_opts}" __b3bp_tmp_opt; do
+    [[ "${__b3bp_tmp_opt}" = "?" ]] && help "Invalid use of script: ${*} "
+
+    if [[ "${__b3bp_tmp_opt}" = "-" ]]; then
+      # OPTARG is long-option-name or long-option=value
+      if [[ "${OPTARG}" =~ .*=.* ]]; then
+        # --key=value format
+        __b3bp_tmp_long_opt=${OPTARG/=*/}
+        # Set opt to the short option corresponding to the long option
+        __b3bp_tmp_varname="__b3bp_tmp_opt_long2short_${__b3bp_tmp_long_opt//-/_}"
+        printf -v "__b3bp_tmp_opt" '%s' "${!__b3bp_tmp_varname}"
+        OPTARG=${OPTARG#*=}
+      else
+        # --key value format
+        # Map long name to short version of option
+        __b3bp_tmp_varname="__b3bp_tmp_opt_long2short_${OPTARG//-/_}"
+        printf -v "__b3bp_tmp_opt" '%s' "${!__b3bp_tmp_varname}"
+        # Only assign OPTARG if option takes an argument
+        __b3bp_tmp_varname="__b3bp_tmp_has_arg_${__b3bp_tmp_opt}"
+        __b3bp_tmp_varvalue="${!__b3bp_tmp_varname}"
+        [[ "${__b3bp_tmp_varvalue}" != "0" ]] && __b3bp_tmp_varvalue="1"
+        printf -v "OPTARG" '%s' "${@:OPTIND:${__b3bp_tmp_varvalue}}"
+        # shift over the argument if argument is expected
+        ((OPTIND+=__b3bp_tmp_varvalue))
+      fi
+      # we have set opt/OPTARG to the short value and the argument as OPTARG if it exists
+    fi
+
+    __b3bp_tmp_value="${OPTARG}"
+
+    __b3bp_tmp_varname="__b3bp_tmp_is_array_${__b3bp_tmp_opt:0:1}"
+    if [[ "${!__b3bp_tmp_varname}" != "0" ]]; then
+      __b3bp_tmp_varname="arg_${__b3bp_tmp_opt:0:1}[@]"
+
+      # shellcheck disable=SC2016
+      declare -a "${__b3bp_tmp_varname}"='("${!__b3bp_tmp_varname}" "${__b3bp_tmp_value}")'
+    else
+      __b3bp_tmp_varname="arg_${__b3bp_tmp_opt:0:1}"
+      __b3bp_tmp_default="${!__b3bp_tmp_varname}"
+
+      if [[ -z "${OPTARG}" ]]; then
+        __b3bp_tmp_value=$((__b3bp_tmp_default + 1))
+      fi
+
+      printf -v "${__b3bp_tmp_varname}" '%s' "${__b3bp_tmp_value}"
+    fi
+  done
+  set -o nounset # no more unbound variable references expected
+
+  shift $((OPTIND-1))
+
+  if [[ "${1:-}" = "--" ]] ; then
+    shift
+  fi
+fi
+
+### Command-line argument switches 
+##############################################################################
+
+# help mode
+if [[ "${arg_h:?}" = "1" ]]; then
+  # Help exists with code 1
+  help "Help using ${0}"
+fi
+
+
+### Runtime
+##############################################################################
+
+COLOR=${1:-green}
+case $COLOR in
+	purple) ;& green) ;& blue) ;& orange) ;& red) ;& pink ) shift ;;
+esac
+__b3bp_log $COLOR "${@}"
+
